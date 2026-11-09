@@ -10,6 +10,7 @@ import (
 
 var (
 	ErrInvalidHeader           = errors.New("invalid header")
+	ErrOutOfBounds             = errors.New("count runs past the end of the file")
 	ErrInvalidStringID         = errors.New("invalid string id")
 	ErrNoStringEnd             = errors.New("failed to find terminating byte")
 	ErrInvalidTypeID           = errors.New("invalid type id")
@@ -31,6 +32,10 @@ type Reader struct {
 	file          io.ReaderAt
 	Version       string
 	ReverseEndian bool
+
+	// size bounds every count read from the file before it sizes an
+	// allocation: a corrupt count would otherwise allocate gigabytes.
+	size uint64
 
 	mapOff        uint32
 	StringIDCount uint32
@@ -93,6 +98,12 @@ func Read(file io.ReaderAt, opts ...Opt) (*Reader, error) {
 		ReverseEndian: reverseEndian,
 	}
 
+	// The header's file_size can lie; a reader that knows its size cannot.
+	r.size = uint64(r.toUint(header[32:36]))
+	if s, ok := file.(interface{ Size() int64 }); ok && s.Size() >= 0 {
+		r.size = min(r.size, uint64(s.Size()))
+	}
+
 	r.mapOff = r.toUint(header[52:56])
 	r.StringIDCount = r.toUint(header[56:60])
 	r.stringIDOff = r.toUint(header[60:64])
@@ -107,7 +118,33 @@ func Read(file io.ReaderAt, opts ...Opt) (*Reader, error) {
 	r.ClassDefCount = r.toUint(header[96:100])
 	r.classDefOff = r.toUint(header[100:104])
 
+	// Every id indexes one of these tables, so a table that fits bounds the
+	// iterators too.
+	for _, t := range []struct {
+		off, count uint32
+		item       uint64
+	}{
+		{r.stringIDOff, r.StringIDCount, 4},
+		{r.typeIDOff, r.TypeIDCount, 4},
+		{r.protoIDOff, r.ProtoIDCount, 12},
+		{r.fieldIDOff, r.FieldIDCount, 8},
+		{r.methodIDOff, r.MethodIDCount, 8},
+		{r.classDefOff, r.ClassDefCount, 32},
+	} {
+		if err := r.fits(t.off, uint64(t.count)*t.item); err != nil {
+			return nil, fmt.Errorf("%w: id table past the end of the file", ErrInvalidHeader)
+		}
+	}
+
 	return r, nil
+}
+
+// fits reports whether n bytes from off lie inside the file.
+func (r *Reader) fits(off uint32, n uint64) error {
+	if uint64(off)+n > r.size {
+		return ErrOutOfBounds
+	}
+	return nil
 }
 
 type String struct {
@@ -147,8 +184,13 @@ func (r *Reader) ReadString(id uint32) (String, error) {
 		return String{}, nil
 	}
 
+	// Every char takes at least a byte, then the terminator.
+	if err := r.fits(strPos+n, uint64(strSize)+1); err != nil {
+		return String{}, err
+	}
+
 	// mutf-8 encodes upto 3 bytes per char
-	data := make([]byte, strSize*3+1)
+	data := make([]byte, min(uint64(strSize)*3+1, r.size-uint64(strPos+n)))
 
 	rsize, err := r.file.ReadAt(data, int64(strPos+n))
 	if err != nil && err != io.EOF {
@@ -521,7 +563,6 @@ func (r *Reader) ReadClassData(off uint32) (ClassData, error) {
 		return res, err
 	}
 
-	res.StaticFields = make([]EncodedField, staticCount)
 	off += n
 
 	instanceCount, n, err := r.readUleb128(off)
@@ -529,7 +570,6 @@ func (r *Reader) ReadClassData(off uint32) (ClassData, error) {
 		return res, err
 	}
 
-	res.InstanceFields = make([]EncodedField, instanceCount)
 	off += n
 
 	directCount, n, err := r.readUleb128(off)
@@ -537,7 +577,6 @@ func (r *Reader) ReadClassData(off uint32) (ClassData, error) {
 		return res, err
 	}
 
-	res.DirectMethods = make([]EncodedMethod, directCount)
 	off += n
 
 	virtualCount, n, err := r.readUleb128(off)
@@ -545,8 +584,17 @@ func (r *Reader) ReadClassData(off uint32) (ClassData, error) {
 		return res, err
 	}
 
-	res.VirtualMethods = make([]EncodedMethod, virtualCount)
 	off += n
+
+	// An encoded field takes at least 2 bytes, a method 3.
+	if err := r.fits(off, 2*(uint64(staticCount)+uint64(instanceCount))+3*(uint64(directCount)+uint64(virtualCount))); err != nil {
+		return res, err
+	}
+
+	res.StaticFields = make([]EncodedField, staticCount)
+	res.InstanceFields = make([]EncodedField, instanceCount)
+	res.DirectMethods = make([]EncodedMethod, directCount)
+	res.VirtualMethods = make([]EncodedMethod, virtualCount)
 
 	lastFieldId := uint32(0)
 
@@ -675,6 +723,9 @@ func (r *Reader) ReadTypeList(off uint32) (TypeList, error) {
 	}
 
 	off += 4
+	if err := r.fits(off, 2*uint64(size)); err != nil {
+		return res, err
+	}
 	res.TypeIds = make([]uint16, size)
 
 	for i := uint32(0); i < size; i++ {
@@ -760,6 +811,9 @@ func (r *Reader) ReadCode(off uint32) (Code, error) {
 
 	off += 16
 
+	if err := r.fits(off, 2*uint64(insCount)); err != nil {
+		return res, err
+	}
 	res.Insns = make([]uint16, insCount)
 
 	for i := uint32(0); i < insCount; i++ {
@@ -791,6 +845,10 @@ func (r *Reader) ReadCode(off uint32) (Code, error) {
 	}
 
 	handOff += n
+	// A handler takes at least a byte.
+	if err := r.fits(handOff, uint64(handlerCount)); err != nil {
+		return res, err
+	}
 	res.Handlers = make([]CatchHandler, handlerCount)
 
 	for i := uint16(0); i < uint16(handlerCount); i++ {
@@ -803,14 +861,19 @@ func (r *Reader) ReadCode(off uint32) (Code, error) {
 
 		handOff += n
 
-		if size <= 0 {
+		pairs := int64(size)
+		if pairs <= 0 {
 			res.Handlers[i].HasCatchAll = true
-			size = -size
+			pairs = -pairs
 		}
 
-		res.Handlers[i].Handlers = make([]HandlerPair, size)
+		// A pair takes at least 2 bytes.
+		if err := r.fits(handOff, 2*uint64(pairs)); err != nil {
+			return res, err
+		}
+		res.Handlers[i].Handlers = make([]HandlerPair, pairs)
 
-		for j := uint16(0); j < uint16(size); j++ {
+		for j := int64(0); j < pairs; j++ {
 			typeIdx, n, err := r.readUleb128(handOff)
 			if err != nil {
 				return res, err
