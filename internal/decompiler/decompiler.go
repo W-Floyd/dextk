@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/csnewman/dextk"
-	"github.com/csnewman/dextk/internal/java"
+	"github.com/W-Floyd/dextk"
+	"github.com/W-Floyd/dextk/internal/java"
 )
 
 func ProcessClass(reader *dextk.Reader, node dextk.ClassNode) string {

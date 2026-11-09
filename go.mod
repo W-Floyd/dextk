@@ -1,4 +1,4 @@
-module github.com/csnewman/dextk
+module github.com/W-Floyd/dextk
 
 go 1.22
 

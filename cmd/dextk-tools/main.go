@@ -6,8 +6,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/csnewman/dextk"
-	"github.com/csnewman/dextk/internal/decompiler"
+	"github.com/W-Floyd/dextk"
+	"github.com/W-Floyd/dextk/internal/decompiler"
 	"golang.org/x/exp/mmap"
 )
 

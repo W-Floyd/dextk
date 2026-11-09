@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/csnewman/dextk"
+	"github.com/W-Floyd/dextk"
 	"golang.org/x/exp/mmap"
 )
 
