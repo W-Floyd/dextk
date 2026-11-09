@@ -31,14 +31,16 @@ func main() {
 			log.Panicln(err)
 		}
 
+		name := node.Name.String()
+
 		// TODO: Add better checking
-		if strings.Contains(node.Name, ".") {
-			panic("invalid name: " + node.Name)
+		if strings.Contains(name, ".") {
+			panic("invalid name: " + name)
 		}
 
 		out := decompiler.ProcessClass(r, node)
 
-		dst := "./out/" + node.Name + ".java"
+		dst := "./out/" + name + ".java"
 
 		dir, _ := path.Split(dst)
 

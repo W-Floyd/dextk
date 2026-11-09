@@ -32,7 +32,7 @@ type Decompiler struct {
 }
 
 func (d *Decompiler) process() {
-	name, pkg := SplitType(d.in.Name)
+	name, pkg := SplitType(d.in.Name.String())
 
 	d.out = &java.Class{
 		Name:    name,
@@ -88,7 +88,7 @@ func (d *Decompiler) process() {
 
 func (d *Decompiler) processField(src dextk.FieldNode, static bool) {
 	out := &java.Field{
-		Name:   src.Name,
+		Name:   src.Name.String(),
 		Static: static,
 		Type:   ConvertType(src.Type),
 	}
@@ -141,7 +141,7 @@ func (d *Decompiler) processField(src dextk.FieldNode, static bool) {
 func ConvertType(td dextk.TypeDescriptor) *java.Type {
 	switch td.Type {
 	case 'L':
-		name, pkg := SplitType(td.ClassName)
+		name, pkg := SplitType(td.ClassName.String())
 
 		return &java.Type{
 			Name:        name,
